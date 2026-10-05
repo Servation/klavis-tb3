@@ -4,7 +4,7 @@
 
 ## Task Metadata
 
-- **Author:** Jeffrey Saelee (jeffrey@jeffreysaelee.com)
+- **Author:** Jeffrey Saelee (gwfds123@gmail.com)
 - **Category:** `Software`
 - **Tags:** <code>mcp</code> <code>json-rpc</code> <code>streamable-http</code> <code>mrtr</code> <code>idempotency</code> <code>cancellation</code> <code>asyncio</code> <code>protocol-bridging</code>
 - **Expert time:** 6 hours
