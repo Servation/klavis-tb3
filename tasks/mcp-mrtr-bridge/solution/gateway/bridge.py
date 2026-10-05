@@ -79,7 +79,10 @@ class Execution:
     consumed: set[int] = field(default_factory=set)
     outcomes: dict[int, dict[str, Any]] = field(default_factory=dict)  # round -> JSON-RPC result/error body
     waiter: Waiter | None = None
-    expires_at: float | None = None
+    # Expiry is enforced here, on the home instance, with the monotonic clock:
+    # the wall clock can step (NTP, VM time sync) and must not revive a state.
+    issued: dict[int, float] = field(default_factory=dict)  # round -> monotonic time state_k was issued
+    expires_at: float | None = None  # monotonic deadline of the latest state
     done: bool = False
     closed: bool = False
     reader: asyncio.Task | None = None
@@ -161,6 +164,9 @@ class Bridge:
             await stream.respond_json(200, _error(rid, -32602, "Invalid requestState: the call is no longer available"))
             return
         k = int(state["k"])
+        if time.monotonic() >= execution.issued.get(k, 0.0) + self.settings.state_ttl:
+            await stream.respond_json(200, _error(rid, -32602, "Invalid requestState: requestState has expired"))
+            return
         if k in execution.outcomes:
             # Re-issued retry for a round that already has its outcome.
             await self._deliver(execution, rid, execution.outcomes[k], stream)
@@ -272,11 +278,12 @@ class Bridge:
             k = execution.rounds
             key = f"input-{k}"
             execution.pending[k] = (key, message["id"])
-            state, expires = self.codec.issue(
+            state, _ = self.codec.issue(
                 execution=execution.id, round=k, home=self.settings.instance,
                 principal=execution.principal, digest=execution.digest,
             )
-            execution.expires_at = expires
+            execution.issued[k] = time.monotonic()
+            execution.expires_at = execution.issued[k] + self.settings.state_ttl
             self._publish(execution, k - 1, {"result": {
                 "resultType": "input_required",
                 "inputRequests": {key: {"method": message["method"], "params": message.get("params") or {}}},
@@ -331,7 +338,7 @@ class Bridge:
     async def sweep_forever(self) -> None:
         while True:
             await asyncio.sleep(SWEEP_INTERVAL)
-            now = time.time()
+            now = time.monotonic()
             for execution in list(self.executions.values()):
                 if execution.waiter is not None or execution.expires_at is None:
                     continue

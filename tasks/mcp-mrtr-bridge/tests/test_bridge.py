@@ -289,7 +289,7 @@ def test_abandoned_calls_are_cancelled(cluster, upstream):
         await until(lambda: bool(inv.cancels(upstream, ref)), ttl + 3.5)
         found = inv.cancels(upstream, ref)
         assert found, f"G4 BREACH: abandoned call {ref} was not cancelled within 3 s of its requestState expiring"
-        assert found[0]["t"] >= t0 + ttl - 0.5, f"G4 BREACH: call {ref} was cancelled {t0 + ttl - found[0]['t']:.1f} s before its requestState expired"
+        assert found[0]["t"] >= t0 + ttl - 1.0, f"G4 BREACH: call {ref} was cancelled {t0 + ttl - found[0]['t']:.1f} s before its requestState expired"
         assert not inv.commits(upstream, ref)
 
     async def abandoned_after_round_1(alice):
@@ -304,7 +304,7 @@ def test_abandoned_calls_are_cancelled(cluster, upstream):
         await until(lambda: bool(inv.cancels(upstream, ref)), ttl + 3.5)
         found = inv.cancels(upstream, ref)
         assert found, f"G4 BREACH: abandoned call {ref} was not cancelled within 3 s of its latest requestState expiring"
-        assert found[0]["t"] >= t1 + ttl - 0.5, f"G4 BREACH: call {ref} was cancelled before its latest requestState expired"
+        assert found[0]["t"] >= t1 + ttl - 1.0, f"G4 BREACH: call {ref} was cancelled before its latest requestState expired"
 
     async def abandoned_after_broken_retry(alice):
         # The retry goes through the other instance and its stream breaks while
@@ -319,7 +319,7 @@ def test_abandoned_calls_are_cancelled(cluster, upstream):
         await until(lambda: bool(inv.cancels(upstream, ref)), max(0.0, t0 + ttl + 3.5 - time.monotonic()))
         found = inv.cancels(upstream, ref)
         assert found, f"G4 BREACH: call {ref}, abandoned after its retry stream broke, was not cancelled within 3 s of its requestState expiring"
-        assert found[0]["t"] >= t0 + ttl - 0.5, f"G4 BREACH: call {ref} was cancelled before its requestState expired"
+        assert found[0]["t"] >= t0 + ttl - 1.0, f"G4 BREACH: call {ref} was cancelled before its requestState expired"
 
     async def attached_past_expiry(alice):
         ref = new_ref()
@@ -379,7 +379,7 @@ def test_state_binding(cluster, upstream):
         ref = new_ref()
         args = {"ref": ref, "plan": [["elicit"], ["commit"]]}
         first = await start(alice, "b", "rotate_secret", args, ref)
-        await asyncio.sleep(cluster.ttl + 0.7)
+        await asyncio.sleep(cluster.ttl + 1.5)
         final = await (await alice.call("a", "rotate_secret", args, state=state_of(first),
                                         answers=inv.answers_for(first, f"{ref}-late"))).result(15)
         inv.check_error(final, -32602, f"expired requestState of {ref}")

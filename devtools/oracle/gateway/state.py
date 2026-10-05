@@ -19,6 +19,9 @@ import time
 from typing import Any
 
 
+WALL_CLOCK_GRACE = 2.0
+
+
 class StateError(ValueError):
     pass
 
@@ -62,7 +65,10 @@ class StateCodec:
             raise StateError("requestState belongs to another principal")
         if payload.get("d") != digest:
             raise StateError("requestState does not match this tool call")
-        if time.time() >= float(payload.get("x", 0)):
+        # Coarse check only, so any instance can turn away long-dead states
+        # without asking the home. The wall clock may step by a second or so,
+        # hence the grace; the home enforces the exact TTL on its monotonic clock.
+        if time.time() >= float(payload.get("x", 0)) + WALL_CLOCK_GRACE:
             raise StateError("requestState has expired")
         return payload
 
