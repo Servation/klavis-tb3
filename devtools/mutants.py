@@ -59,14 +59,14 @@ MUTANTS = {
         ("bridge.py", 'forwarded["progressToken"] = waiter.progress_token', 'forwarded["progressToken"] = execution.id'),
     ]),
     "D8-expire-without-cancel": ("expired executions dropped without notifications/cancelled", [
-        ("bridge.py", '                    await self._cancel(execution, "requestState expired")', "                    self._close(execution)"),
+        ("bridge.py", '                await self._cancel(execution, "requestState expired")', "                self._close(execution)"),
     ]),
     "D9-not-bound-to-call": ("requestState not bound to tool and arguments", [
         ("state.py", '        if payload.get("d") != digest:\n            raise StateError("requestState does not match this tool call")\n', ""),
     ]),
     "O-never-cancel": ("over-correction: never cancel upstream", [
-        ("bridge.py", "        if execution.closed:\n            return\n        self._close(execution)\n        if not execution.done:",
-         "        if execution.closed:\n            return\n        self._close(execution)\n        return\n        if not execution.done:"),
+        ("bridge.py", "        self.executions.pop(execution.id, None)\n        if not execution.done:\n            try:\n                await execution.client.cancel(",
+         "        self.executions.pop(execution.id, None)\n        self.journal.forget(execution.id)\n        return\n        if not execution.done:\n            try:\n                await execution.client.cancel("),
     ]),
     "O-consume-after-await": ("over-correction: answers-consumed flag set after the upstream POST", [
         ("bridge.py", "        execution.consumed.add(k)\n        waiter = self._attach(execution, k, params, stream)\n        try:\n            await execution.client.respond(upstream_rid, answers[key])\n",
@@ -82,8 +82,30 @@ MUTANTS = {
         ("bridge.py", 'forwarded["progressToken"] = waiter.progress_token', 'forwarded["progressToken"] = waiter.progress_token or execution.id'),
     ]),
     "O-expire-while-attached": ("over-correction: expiry cancels even with a request attached", [
-        ("bridge.py", "                if execution.waiter is not None or execution.expires_at is None:\n",
-         "                if execution.expires_at is None:\n"),
+        ("bridge.py", "            if execution.waiter is not None or execution.expires_at is None:\n",
+         "            if execution.expires_at is None:\n"),
+    ]),
+    "L2-repost-on-close": ("upstream stream closed by the server: the call is POSTed again", [
+        ("legacy_client.py", "            if last_event_id is None:\n                request = self._http.stream(\"POST\"",
+         "            if True:\n                request = self._http.stream(\"POST\""),
+    ]),
+    "L2-close-ends-call": ("upstream stream closed by the server: treated as the end of the call", [
+        ("legacy_client.py", "            if retry_ms is None or last_event_id is None:\n", "            if True:\n"),
+    ]),
+    "L2-resume-from-start": ("upstream stream resumed from its first event, replaying everything", [
+        ("legacy_client.py", "                    if event.id is not None:\n                        last_event_id = event.id\n",
+         "                    if event.id is not None:\n                        last_event_id = last_event_id or event.id\n"),
+    ]),
+    "G6-journal-after-post": ("upstream call recorded only once the upstream has answered", [
+        ("bridge.py", "        self.journal.record(\n            execution.id,", "        record = lambda: self.journal.record(\n            execution.id,"),
+        ("bridge.py", "            async for message in messages:\n                if self._on_upstream_message(execution, message):",
+         "            async for message in messages:\n                record()\n                if self._on_upstream_message(execution, message):"),
+    ]),
+    "G6-no-reaper": ("nobody cancels executions of a dead instance", [
+        ("bridge.py", "                await self._reap_orphans()\n", "                pass\n"),
+    ]),
+    "G6-ignore-restart": ("a restarted owner (fresh heartbeat, new boot) is treated as alive", [
+        ("journal.py", 'if owner is None or owner.get("boot") != record.get("boot") or now', 'if owner is None or now'),
     ]),
     "O-forward-ignores-disconnect": ("forwarding instance ignores a client that leaves before the home answers", [
         ("peers.py", "    done, _ = await asyncio.wait({sending, gone}, return_when=asyncio.FIRST_COMPLETED)\n    if sending not in done:\n",

@@ -21,6 +21,10 @@ import legacykit  # noqa: E402
 
 def build(tokens: dict[str, str]) -> legacykit.KitServer:
     app = legacykit.KitServer("imports", tokens)
+    # The imports team recycles long-lived connections: after two events the
+    # server closes the connection (sending `retry`) and expects the client to
+    # resume the stream.
+    app.poll_after = 2
     committed: list[dict] = []
 
     @app.tool(

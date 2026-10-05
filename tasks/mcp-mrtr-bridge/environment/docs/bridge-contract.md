@@ -22,6 +22,12 @@ gateway's behaviour open, this document decides it.
 - **Attached request**: of the call's requests whose response stream is open
   and not yet answered, the one the gateway received most recently. A call has
   at most one attached request.
+- **Home instance**: the instance that received the call's initial request.
+
+Legacy servers may close the connection that carries a call's stream at any
+time, as 2025-11-25 allows: they send a `retry` field first, and the stream
+is resumed with `GET` and `Last-Event-ID`. That is neither a cancellation nor
+the end of the call.
 
 ## Guarantees
 
@@ -53,9 +59,9 @@ obtain the call's outcome:
 - (b) the call's latest `requestState` expired while no request was attached:
   within 3 s of the expiry.
 
-Nothing else cancels an execution. In particular, closing the stream of a
-retry, or of a request that already received its response, is not a
-cancellation, and an execution that finishes while no request is attached
+Apart from G6, nothing else cancels an execution. In particular, closing the
+stream of a retry, or of a request that already received its response, is not
+a cancellation, and an execution that finishes while no request is attached
 keeps its outcome until the call's latest `requestState` expires.
 
 **G5 Progress.** Progress notifications the legacy server sends for an
@@ -63,3 +69,11 @@ execution are forwarded to the call's attached request, and only to it, as
 `notifications/progress` carrying that request's own `progressToken` (none at
 all if that request sent no `progressToken`), in non-decreasing order, and
 never after that request's response.
+
+**G6 Instance loss.** An instance can die at any moment (it is killed, or its
+host fails) and may later be restarted with the same configuration and an
+empty memory. Every execution of a call whose home instance died is then
+cancelled upstream within 10 s of the death, whether or not the instance comes
+back, and is never executed again. Requests for such a call are rejected with
+`-32602`, or answered with the outcome of their round if it is still
+available. Calls with another home instance are unaffected.

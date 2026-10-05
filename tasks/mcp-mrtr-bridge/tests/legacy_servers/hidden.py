@@ -10,10 +10,16 @@ calls) and a `plan`, a list of steps the tool performs in order:
   ["progress", n, interval]            emit n progress notifications, interval s apart
   ["sleep", seconds]
   ["barrier", name]                    wait until the verifier releases `name`
+  ["drop"]                             close the call's current connection (2025-11-25 polling)
   ["commit"]                           record the externally visible side effect
 
 The result echoes the ref and every answer received, in order, so the
 verifier can tell which retry's inputResponses reached the server.
+
+Server behaviour differs on purpose: vault keeps connections open, research
+closes the connection after every event (clients must resume with
+Last-Event-ID) and acknowledges answers slowly, and deploys can hold its
+response headers for `slow_start` seconds after the call has started.
 """
 
 from __future__ import annotations
@@ -31,12 +37,13 @@ SCHEMA = {
         "ref": {"type": "string"},
         "plan": {"type": "array"},
         "note": {"type": "string"},
+        "slow_start": {"type": "number"},
     },
     "required": ["ref", "plan"],
 }
 
 
-async def run_plan(ctx: legacykit.ToolContext, ref: str, plan: list, note: str = "") -> dict:
+async def run_plan(ctx: legacykit.ToolContext, ref: str, plan: list, note: str = "", slow_start: float = 0.0) -> dict:
     answers: list = []
     emitted = 0
     for step in plan:
@@ -60,6 +67,8 @@ async def run_plan(ctx: legacykit.ToolContext, ref: str, plan: list, note: str =
             await asyncio.sleep(float(step[1]))
         elif kind == "barrier":
             await ctx.barrier(str(step[1]))
+        elif kind == "drop":
+            ctx.drop_connection()
         elif kind == "commit":
             ctx.commit(ref=ref)
         else:
@@ -82,10 +91,13 @@ def build_vault(tokens: dict[str, str]) -> legacykit.KitServer:
 
 
 def build_deploys(tokens: dict[str, str]) -> legacykit.KitServer:
-    return _build("deploys", {
+    app = _build("deploys", {
         "deploy_service": "Roll out a service version after approval.",
         "rollback_service": "Roll a service back to the previous version.",
     }, tokens)
+    # A slow upstream: the call is running before the gateway hears anything.
+    app.header_delay = lambda arguments: float(arguments.get("slow_start") or 0.0)
+    return app
 
 
 def build_research(tokens: dict[str, str]) -> legacykit.KitServer:
@@ -96,6 +108,8 @@ def build_research(tokens: dict[str, str]) -> legacykit.KitServer:
     # A slow upstream: duplicates of a retry that arrive while its answers are
     # still being delivered must not deliver them again.
     app.answer_ack_delay = 0.3
+    # Never keeps a connection open: every event is followed by a reconnect.
+    app.poll_after = 1
     return app
 
 

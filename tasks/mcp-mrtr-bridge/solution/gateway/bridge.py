@@ -45,6 +45,7 @@ import httpx
 from . import peers
 from .catalog import Catalog
 from .config import Settings
+from .journal import Journal
 from .legacy_client import LegacyClient, LegacyError, SessionExpired
 from .sessions import SessionPool, UnknownPrincipal
 from .state import StateCodec, StateError, call_digest
@@ -73,6 +74,7 @@ class Execution:
     arguments: dict[str, Any]
     digest: str
     client: LegacyClient
+    upstream: str
     upstream_id: str
     rounds: int = 0
     pending: dict[int, tuple[str, str]] = field(default_factory=dict)  # round -> (input key, upstream rid)
@@ -96,6 +98,8 @@ class Bridge:
         self.catalog = catalog
         self.codec = StateCodec(settings.state_key, settings.state_ttl)
         self.executions: dict[str, Execution] = {}
+        self.journal = Journal(settings.state_dir, settings.instance)
+        self.journal.beat()
 
     # ----- entry point ------------------------------------------------------
 
@@ -121,7 +125,12 @@ class Bridge:
             if home is None:
                 await stream.respond_json(200, _error(rid, -32602, "Invalid requestState: unknown instance"))
                 return
-            await peers.forward(self.http, home, self.settings.instance, headers, body, stream)
+            try:
+                await peers.forward(self.http, home, self.settings.instance, headers, body, stream)
+            except httpx.TransportError:
+                # The home instance is gone (or restarting): so is the call.
+                if not stream.started:
+                    await stream.respond_json(200, _error(rid, -32602, "Invalid requestState: the call is no longer available"))
             return
         await self._retry(rid, state, params, stream)
 
@@ -149,6 +158,7 @@ class Bridge:
             arguments=arguments,
             digest=call_digest(tool, arguments),
             client=client,
+            upstream=upstream,
             upstream_id=f"gw-{self.settings.instance}-{exec_id}",
         )
         self.executions[exec_id] = execution
@@ -265,6 +275,14 @@ class Bridge:
             self._publish(execution, execution.rounds, {"error": {"code": -32603, "message": "Upstream ended the call without a result"}})
 
     async def _consume(self, execution: Execution) -> None:
+        # Write-ahead: the record must exist before the call can reach the
+        # upstream, or a crash right after the POST leaves an execution that
+        # no instance knows to cancel.
+        await execution.client.ensure_session()
+        self.journal.record(
+            execution.id, principal=execution.principal, upstream=execution.upstream,
+            session=execution.client.session_id, upstream_id=execution.upstream_id,
+        )
         messages = execution.client.call_tool(execution.upstream_id, execution.tool, execution.arguments, execution.id)
         async with contextlib.aclosing(messages):
             async for message in messages:
@@ -322,7 +340,8 @@ class Bridge:
     async def _cancel(self, execution: Execution, reason: str) -> None:
         if execution.closed:
             return
-        self._close(execution)
+        execution.closed = True
+        self.executions.pop(execution.id, None)
         if not execution.done:
             try:
                 await execution.client.cancel(execution.upstream_id, reason)
@@ -330,24 +349,60 @@ class Bridge:
                 log.warning("could not cancel %s upstream: %s", execution.upstream_id, exc)
         if execution.reader is not None:
             execution.reader.cancel()
+        # Only now: until the cancellation is out, the record is what lets
+        # another instance finish the job if this one dies.
+        self.journal.forget(execution.id)
 
     def _close(self, execution: Execution) -> None:
         execution.closed = True
         self.executions.pop(execution.id, None)
+        self.journal.forget(execution.id)
+
+    async def _reap_orphans(self) -> None:
+        """Cancel upstream executions whose owning instance died or restarted."""
+        for orphan in self.journal.orphans():
+            record = self.journal.claim(orphan)
+            if record is None:
+                continue  # another instance got there first
+            upstream = self.settings.upstreams.get(record.get("upstream", ""))
+            token = upstream.credentials.get(record.get("principal", "")) if upstream else None
+            if upstream is None or token is None or not record.get("session"):
+                continue
+            client = LegacyClient(self.http, upstream.url, token)
+            try:
+                await client.cancel_in_session(record["session"], record["upstream_id"], "gateway instance lost")
+                log.info("cancelled orphaned upstream call %s", record["upstream_id"])
+            except (LegacyError, httpx.HTTPError) as exc:
+                log.warning("could not cancel orphaned call %s: %s", record["upstream_id"], exc)
+
+    async def _heartbeat_forever(self) -> None:
+        # Separate from the sweeper, so a slow upstream request there can never
+        # make this live instance look dead to its peers.
+        while True:
+            self.journal.beat()
+            await asyncio.sleep(SWEEP_INTERVAL)
 
     async def sweep_forever(self) -> None:
-        while True:
-            await asyncio.sleep(SWEEP_INTERVAL)
-            now = time.monotonic()
-            for execution in list(self.executions.values()):
-                if execution.waiter is not None or execution.expires_at is None:
-                    continue
-                if now < execution.expires_at:
-                    continue
-                if execution.done:
-                    self._close(execution)
-                else:
-                    await self._cancel(execution, "requestState expired")
+        heartbeat = asyncio.create_task(self._heartbeat_forever())
+        try:
+            while True:
+                await asyncio.sleep(SWEEP_INTERVAL)
+                await self._reap_orphans()
+                await self._sweep_expired()
+        finally:
+            heartbeat.cancel()
+
+    async def _sweep_expired(self) -> None:
+        now = time.monotonic()
+        for execution in list(self.executions.values()):
+            if execution.waiter is not None or execution.expires_at is None:
+                continue
+            if now < execution.expires_at:
+                continue
+            if execution.done:
+                self._close(execution)
+            else:
+                await self._cancel(execution, "requestState expired")
 
 
 def _error(rid: Any, code: int, text: str) -> dict:

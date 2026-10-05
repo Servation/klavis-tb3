@@ -100,18 +100,28 @@ class LegacyClient:
         params: dict[str, Any] = {"name": name, "arguments": arguments}
         if progress_token is not None:
             params["_meta"] = {"progressToken": progress_token}
-        payload = {"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": params}
-        async with self._http.stream("POST", self.url, json=payload, headers=self._headers()) as response:
-            if response.status_code == 404:
-                self.reset()
-                raise SessionExpired("session expired")
-            if response.status_code != 200:
-                raise LegacyError(f"tools/call failed: HTTP {response.status_code}")
-            if response.headers.get("content-type", "").startswith("application/json"):
-                yield json.loads(await response.aread())
-                return
-            async for message in _iter_sse(response):
-                yield message
+        attempt = 0
+        while True:
+            call_id = request_id if attempt == 0 else f"{request_id}.{attempt}"
+            payload = {"jsonrpc": "2.0", "id": call_id, "method": "tools/call", "params": params}
+            async with self._http.stream("POST", self.url, json=payload, headers=self._headers()) as response:
+                if response.status_code == 404:
+                    self.reset()
+                    raise SessionExpired("session expired")
+                if response.status_code != 200:
+                    raise LegacyError(f"tools/call failed: HTTP {response.status_code}")
+                if response.headers.get("content-type", "").startswith("application/json"):
+                    yield json.loads(await response.aread())
+                    return
+                async for message in _iter_sse(response):
+                    yield message
+                    if message.get("id") == call_id and ("result" in message or "error" in message):
+                        return
+            # The upstream closed the stream before sending the result. Our
+            # upstream tools are idempotent, so the call is simply made again.
+            attempt += 1
+            if attempt > 3:
+                raise LegacyError("upstream keeps closing the stream")
 
     async def respond(self, request_id: str, result: dict[str, Any]) -> None:
         """Answer a server-to-client request."""
@@ -140,17 +150,21 @@ class LegacyClient:
 
 
 async def _iter_sse(response: httpx.Response) -> AsyncIterator[dict[str, Any]]:
+    # Only `data` matters to us; events without data (such as the priming
+    # event servers send first) carry no message.
     data: list[str] = []
     async for line in response.aiter_lines():
         if line == "":
-            if data:
-                yield json.loads("\n".join(data))
-                data = []
+            payload = "\n".join(data).strip()
+            if payload:
+                yield json.loads(payload)
+            data = []
             continue
         if line.startswith(":"):
             continue
         field, _, value = line.partition(":")
         if field == "data":
             data.append(value[1:] if value.startswith(" ") else value)
-    if data:
-        yield json.loads("\n".join(data))
+    payload = "\n".join(data).strip()
+    if payload:
+        yield json.loads(payload)

@@ -464,6 +464,123 @@ def test_progress_routing(cluster, upstream):
     run(scenario())
 
 
+def test_upstream_stream_resumption(cluster, upstream):
+    """G1, G2, G4, G5 when legacy servers close a call's connection mid-stream (2025-11-25 polling): the call continues as one execution, no event is lost or repeated, and cancellation still reaches the server."""
+
+    async def scenario():
+        alice = Client(cluster.client_tokens["alice"], cluster.ports)
+
+        # A: explicit drops on a server that otherwise keeps connections open.
+        ref = new_ref()
+        args = {"ref": ref, "plan": [["progress", 2, 0.1], ["drop"], ["progress", 2, 0.1], ["elicit"], ["drop"],
+                                     ["sleep", 0.2], ["drop"], ["progress", 1, 0.1], ["commit"]]}
+        initial = await alice.call("a", "rotate_secret", args, progress_token="r-init")
+        first = await initial.result(20)
+        assert outcome_kind(first) == "input_required", f"G1 BREACH: call {ref} did not get its input request after a dropped upstream connection: {first}"
+        values = [n["progress"] for n in initial.progress()]
+        assert values == [1, 2, 3, 4], f"G5 BREACH: call {ref} progress across upstream reconnects was {values}, expected [1, 2, 3, 4]"
+        retry = await alice.call("b", "rotate_secret", args, state=state_of(first),
+                                 answers=inv.answers_for(first, f"{ref}-1"), progress_token="r-1")
+        inv.check_complete(upstream, ref, await retry.result(20), rounds=1)
+        assert [n["progress"] for n in retry.progress()] == [5], f"G5 BREACH: call {ref} retry progress was {[n['progress'] for n in retry.progress()]}"
+        assert len(inv.commits(upstream, ref)) == 1
+
+        # B: a server that closes the connection after every event, two rounds.
+        ref = new_ref()
+        args = {"ref": ref, "plan": [["progress", 3, 0.1], ["sample"], ["progress", 2, 0.1], ["roots"], ["commit"]]}
+        initial = await alice.call("b", "summarize_findings", args, progress_token="p-init")
+        first = await initial.result(20)
+        assert outcome_kind(first) == "input_required", f"G1 BREACH: call {ref} did not get its input request from a polling server: {first}"
+        assert [n["progress"] for n in initial.progress()] == [1, 2, 3], f"G5 BREACH: call {ref} progress was {[n['progress'] for n in initial.progress()]}"
+        retry1 = await alice.call("a", "summarize_findings", args, state=state_of(first),
+                                  answers=inv.answers_for(first, f"{ref}-1"), progress_token="p-1")
+        second = await retry1.result(20)
+        assert outcome_kind(second) == "input_required", f"G2 BREACH: call {ref} did not get its round-2 request: {second}"
+        assert [n["progress"] for n in retry1.progress()] == [4, 5], f"G5 BREACH: call {ref} progress was {[n['progress'] for n in retry1.progress()]}"
+        retry2 = await alice.call("b", "summarize_findings", args, state=state_of(second), answers=inv.answers_for(second, f"{ref}-2"))
+        structured = inv.check_complete(upstream, ref, await retry2.result(20), rounds=2)
+        assert inv.markers_used(structured) == [f"{ref}-1", f"{ref}-2"], f"G2 BREACH: call {ref} applied answers {structured.get('answers')}"
+
+        # C: the initial request is closed while the gateway is between upstream connections.
+        ref = new_ref()
+        args = {"ref": ref, "plan": [["progress", 2, 0.3], ["sleep", 3.0], ["commit"]]}
+        call = await alice.call("a", "scan_repository", args, progress_token="c")
+        await call.events_count(1, 10)
+        call.close("fin")
+        assert await until(lambda: bool(inv.cancels(upstream, ref)), 2.0), (
+            f"G4 BREACH: initial stream of {ref} closed but no notifications/cancelled reached the polling server within 2 s"
+        )
+        await asyncio.sleep(max(0.0, call.closed_at + 4.0 - time.monotonic()))
+        assert not inv.commits(upstream, ref), f"G4 BREACH: cancelled call {ref} still committed its side effect"
+
+    run(scenario())
+
+
+def test_instance_loss(cluster, upstream):
+    """G6: when an instance dies (SIGKILL), with or without a restart, every execution it started is cancelled upstream within 10 s and never executed again, requests for those calls are rejected or answered with their outcome, and calls started on the surviving instance are unaffected."""
+
+    async def scenario():
+        alice = Client(cluster.client_tokens["alice"], cluster.ports)
+        bob = Client(cluster.client_tokens["bob"], cluster.ports)
+
+        # Calls whose home is instance a, in different states, and one on b.
+        attached = new_ref()
+        a_args = {"ref": attached, "plan": [["elicit"], ["barrier", f"never-{attached}"], ["commit"]]}
+        first = await start(alice, "a", "rotate_secret", a_args, attached)
+        held = await alice.call("b", "rotate_secret", a_args, state=state_of(first), answers=inv.answers_for(first, f"{attached}-1"))
+        assert await until(lambda: inputs_received(upstream, attached) >= 1, 10), f"G2 BREACH: call {attached} answers never reached upstream"
+
+        in_flight = new_ref()
+        f_args = {"ref": in_flight, "plan": [["sleep", 8.0], ["elicit"], ["commit"]]}
+        pending_initial = await bob.call("a", "revoke_token", f_args)
+
+        survivor = new_ref()
+        s_args = {"ref": survivor, "plan": [["elicit"], ["sleep", 0.5], ["commit"]]}
+        s_first = await start(bob, "b", "deploy_service", s_args, survivor)
+
+        assert await until(lambda: started(upstream, in_flight), 5.0), f"G1 BREACH: call {in_flight} never started upstream"
+        killed_at = cluster.kill("a")
+        held.close()
+        pending_initial.close()
+
+        for ref in (attached, in_flight):
+            assert await until(lambda: bool(inv.cancels(upstream, ref)), max(0.0, killed_at + 10.0 - time.monotonic())), (
+                f"G6 BREACH: call {ref} was started by the killed instance but was not cancelled upstream within 10 s"
+            )
+        late = await (await alice.call("b", "rotate_secret", a_args, state=state_of(first),
+                                       answers=inv.answers_for(first, f"{attached}-2"))).result(15)
+        assert late is not None and ("error" in late and late["error"].get("code") == -32602), (
+            f"G6 BREACH: a request for call {attached}, whose instance died, got {late} instead of -32602"
+        )
+        s_final = await (await bob.call("b", "deploy_service", s_args, state=state_of(s_first),
+                                        answers=inv.answers_for(s_first, f"{survivor}-1"))).result(20)
+        inv.check_complete(upstream, survivor, s_final, rounds=1)
+
+        # The call reached the upstream before the instance heard anything back.
+        cluster.restart("a")
+        slow = new_ref()
+        w_args = {"ref": slow, "plan": [["elicit"], ["commit"]], "slow_start": 3.0}
+        call = await alice.call("a", "deploy_service", w_args)
+        assert await until(lambda: started(upstream, slow), 5.0), f"G1 BREACH: call {slow} never started upstream"
+        killed_at = cluster.kill("a")
+        call.close()
+        await asyncio.sleep(1.0)
+        cluster.restart("a")
+        assert await until(lambda: bool(inv.cancels(upstream, slow)), max(0.0, killed_at + 10.0 - time.monotonic())), (
+            f"G6 BREACH: call {slow} reached the upstream just before its instance was killed and was not cancelled within 10 s"
+        )
+
+        # After all that, the restarted instance serves new calls normally.
+        fresh = new_ref()
+        final = await drive(alice, "rotate_secret", {"ref": fresh, "plan": [["elicit"], ["commit"]]}, ["a", "b"], fresh)
+        inv.check_complete(upstream, fresh, final, rounds=1)
+        for ref in (attached, in_flight, slow):
+            inv.execution_of(upstream, ref)  # never executed a second time
+            assert not inv.commits(upstream, ref), f"G6 BREACH: call {ref} committed after its instance died"
+
+    run(scenario())
+
+
 def test_soak(cluster, upstream):
     """G1-G5 under load: 40 calls from four principals with two clients each (colliding ids), seeded routing across instances, broken and duplicated retries; every call completes exactly once with its own result."""
     rng = random.Random(20261004)
