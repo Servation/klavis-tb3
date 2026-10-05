@@ -1,0 +1,24 @@
+# Python build and cache output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Raw harbor job directories: trial logs can contain credentials (agents may
+# print their environment). Trimmed, scrubbed results are committed under
+# results/ instead.
+jobs/
+
+# Local credentials
+.env
+.env.*
+auth.json
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

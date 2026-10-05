@@ -1,0 +1,20 @@
+{
+  "instances": {
+    "a": "http://127.0.0.1:8101",
+    "b": "http://127.0.0.1:8102"
+  },
+  "clients": {
+    "dev-alice-token": "alice",
+    "dev-bob-token": "bob"
+  },
+  "upstreams": {
+    "tickets": {
+      "url": "http://127.0.0.1:9101/mcp",
+      "credentials": {"alice": "tickets-alice-token", "bob": "tickets-bob-token"}
+    },
+    "imports": {
+      "url": "http://127.0.0.1:9102/mcp",
+      "credentials": {"alice": "imports-alice-token", "bob": "imports-bob-token"}
+    }
+  }
+}
