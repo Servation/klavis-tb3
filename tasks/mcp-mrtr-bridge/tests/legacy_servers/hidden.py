@@ -89,10 +89,14 @@ def build_deploys(tokens: dict[str, str]) -> legacykit.KitServer:
 
 
 def build_research(tokens: dict[str, str]) -> legacykit.KitServer:
-    return _build("research", {
+    app = _build("research", {
         "summarize_findings": "Summarise findings with help from the client's model.",
         "scan_repository": "Long-running repository scan with progress.",
     }, tokens)
+    # A slow upstream: duplicates of a retry that arrive while its answers are
+    # still being delivered must not deliver them again.
+    app.answer_ack_delay = 0.3
+    return app
 
 
 BUILDERS = {"vault": build_vault, "deploys": build_deploys, "research": build_research}

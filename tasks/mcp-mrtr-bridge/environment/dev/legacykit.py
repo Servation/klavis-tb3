@@ -180,6 +180,9 @@ class KitServer:
         self.sessions: dict[str, Session] = {}
         self.recorder = Recorder()
         self.extra_routes: dict[tuple[str, str], Callable] = {}
+        # Seconds to wait before acknowledging a client's answer, to model a
+        # slow upstream (answers are often persisted before they are acked).
+        self.answer_ack_delay = 0.0
         self._barriers: dict[str, asyncio.Event] = {}
         self._ids = itertools.count(1)
         self._exec_ids = itertools.count(1)
@@ -279,6 +282,8 @@ class KitServer:
 
     async def _client_response(self, session: Session, message: dict, send) -> None:
         rid = message.get("id")
+        if self.answer_ack_delay:
+            await asyncio.sleep(self.answer_ack_delay)
         entry = session.pending.get(rid)
         if entry is None or entry[1].done():
             # Answer to a request that is not (or no longer) outstanding. Like

@@ -211,12 +211,13 @@ def test_duplicate_retries(cluster, upstream):
             inv.check_complete(upstream, ref, held.final, rounds=1)
         held.close()
 
-        # B: three concurrent copies of the same retry.
+        # B: three concurrent copies of the same retry, against the upstream
+        # that takes 0.3 s to acknowledge an answer.
         ref = new_ref()
         args = {"ref": ref, "plan": [["elicit"], ["sleep", 0.5], ["commit"]]}
-        first = await start(alice, "b", "revoke_token", args, ref)
+        first = await start(alice, "b", "summarize_findings", args, ref)
         copies = await asyncio.gather(*[
-            alice.call(instance, "revoke_token", args, state=state_of(first), answers=inv.answers_for(first, f"{ref}-c{i}"))
+            alice.call(instance, "summarize_findings", args, state=state_of(first), answers=inv.answers_for(first, f"{ref}-c{i}"))
             for i, instance in enumerate(("a", "b", "a"))
         ])
         finals = await asyncio.gather(*[copy.result(20) for copy in copies])
@@ -228,7 +229,7 @@ def test_duplicate_retries(cluster, upstream):
         assert len(inv.commits(upstream, ref)) == 1, f"G1 BREACH: call {ref} committed {len(inv.commits(upstream, ref))}x"
 
         # C: a late duplicate after the call completed gets the same outcome.
-        late = await alice.call("b", "revoke_token", args, state=state_of(first), answers=inv.answers_for(first, f"{ref}-late"))
+        late = await alice.call("b", "summarize_findings", args, state=state_of(first), answers=inv.answers_for(first, f"{ref}-late"))
         inv.check_complete(upstream, ref, await late.result(20), rounds=1)
 
     run(scenario())
