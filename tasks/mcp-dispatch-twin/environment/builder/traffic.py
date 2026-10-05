@@ -48,6 +48,8 @@ def make_bundle(seed: int, regime: str) -> dict:
             "id": name,
             "weight": rng.randint(1, 5),
             "max_inflight": rng.randint(2, 4) if caps else rng.randint(8, 20),
+            "burst": rng.randint(3, 10),
+            "refill_ms": rng.choice([150, 200, 250, 300, 400]),
         })
 
     duration = rng.randint(15, 30) * 60_000
