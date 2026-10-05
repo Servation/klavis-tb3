@@ -38,7 +38,10 @@ def run_twin(bundle_path: str) -> list[dict]:
         bundle = os.path.join(work, "bundle.json")
         shutil.copyfile(bundle_path, bundle)
         os.chmod(bundle, 0o644)
-        cmd = [PYTHON, "-I", "-E", "-s", TWIN, bundle]
+        # Not -I: that would drop the script's directory from sys.path, and a
+        # twin may import its own modules from /app/twin. The twin runs as
+        # nobody, so -E -s (no PYTHON* variables, no user site) is enough.
+        cmd = [PYTHON, "-E", "-s", TWIN, bundle]
         if os.geteuid() == 0:
             cmd = ["setpriv", "--reuid", "nobody", "--regid", "nogroup", "--clear-groups", "--no-new-privs"] + cmd
         out_path = os.path.join(work, "out.jsonl")
