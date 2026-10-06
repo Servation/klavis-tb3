@@ -114,7 +114,7 @@ def build(edits: list[tuple[str, str]]) -> str:
 
 
 def main(filters: list[str]) -> None:
-    rows = ["| Mutant | Reward | First failing test |", "|---|---|---|"]
+    rows = ["| Mutant | Reward | Failing tests |", "|---|---|---|"]
     for name, edits in MUTANTS.items():
         if filters and not any(f in name for f in filters):
             continue
