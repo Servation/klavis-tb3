@@ -28,4 +28,4 @@ A separate process traces the system. Possible crash outcomes are built from the
 
 ## Relevant experience
 
-PLACEHOLDER: written by the author by hand.
+I’m a full-stack engineer with about three years, most recently at Apple, focused on backend and AI. On the backend I work mostly in Java/Spring Boot and Python, React on the front, with AWS and Kubernetes, and I specialize in LLM, RAG, and agentic systems. At Apple I was one of the first engineers on an LLM coding-assistant extension in the IDE, and it ended up used by over 10,000 engineers. More recently I built Kindred, an agent app that helps family caregivers of elderly relatives with scheduling and medication, for the capstone of Google and Kaggle’s 5-day AI Agents Intensive.
