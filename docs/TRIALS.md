@@ -1,6 +1,9 @@
 # Trials: `crash-safe-ledger`
 
-Every trial ran on the frozen task at commit `5666ac5`. harbor records the
+Every trial ran on the frozen task at commit `ea37db8`. Job names and the `results/` folders still carry `5666ac5`, the
+same commit's id before publication. The history was rewritten once, to
+remove a private notes file that was never part of a task; no task file
+changed. harbor records the
 same task checksum (`6419d6f352288b4b…`) for all of them. Raw results stay
 local; trimmed copies of each trial's `result.json` and its TB3 trial
 analysis are in [`results/`](../results).
